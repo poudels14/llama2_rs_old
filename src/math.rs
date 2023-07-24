@@ -1,10 +1,12 @@
+use nalgebra::DVector;
 use rayon::prelude::*;
+use std::ops::AddAssign;
 
-pub fn argmax(v: &[f32], n: usize) -> usize {
+pub fn argmax(v: &[f32]) -> usize {
     // return argmax of v in elements 0..n
     let mut max_i = 0;
     let mut max_p = v[0];
-    for i in 1..n {
+    for i in 1..v.len() {
         if v[i] > max_p {
             max_i = i;
             max_p = v[i];
@@ -26,21 +28,27 @@ pub fn sample(probabilities: &[f32], n: usize) -> usize {
     return n - 1; // in case of rounding errors
 }
 
-pub fn rmsnorm(o: &mut [f32], x_ptr: *const f32, weight: &[f32], size: usize) {
-    let x: &[f32] = unsafe { core::slice::from_raw_parts(x_ptr, o.len()) };
+pub fn rmsnorm(o: &mut DVector<f32>, x: &DVector<f32>, weight: &DVector<f32>, size: usize) {
     // calculate sum of squares
-    let mut ss = 0.;
-    for j in 0..size {
-        ss += x[j] * x[j];
-    }
+    let mut ss = x.dot(&x);
 
     ss = ss / size as f32;
     ss = ss + 1e-5;
     ss = 1.0 / ss.sqrt();
-    // normalize and scale
-    for j in 0..size {
-        o[j] = weight[j] * (ss * x[j]);
-    }
+
+    o.copy_from(&weight.component_mul(&x.scale(ss)));
+}
+
+pub fn rmsnorm_self(o: &mut DVector<f32>, weight: &DVector<f32>, size: usize) {
+    // calculate sum of squares
+
+    let mut ss = o.dot(&o);
+
+    ss = ss / size as f32;
+    ss = ss + 1e-5;
+    ss = 1.0 / ss.sqrt();
+
+    o.copy_from(&weight.component_mul(&o.scale(ss)));
 }
 
 pub fn softmax(x: &mut [f32], size: usize) {
@@ -70,19 +78,14 @@ pub fn softmax(x: &mut [f32], size: usize) {
     }
 }
 
-pub fn matmul(xout: &mut [f32], x: &[f32], w: &[f32], n: usize, d: usize) {
-    // W (d,n) @ x (n,) -> xout (d,)
-    xout[0..d].par_iter_mut().enumerate().for_each(|(i, xo)| {
-        let mut val: f32 = 0.0;
-        for j in 0..n {
-            val += w[i * n + j] * x[j];
-        }
-        *xo = val;
+pub fn matmul(xout: &mut DVector<f32>, x: &DVector<f32>, w: &Vec<DVector<f32>>, d: usize) {
+    let xout = xout.as_mut_ptr() as usize;
+    w.into_par_iter().enumerate().for_each(|(i, w)| {
+        let xout = unsafe { core::slice::from_raw_parts_mut(xout as *mut f32, d) };
+        xout[i] = x.dot(w);
     });
 }
 
-pub fn accum(a: &mut [f32], b: &[f32], size: usize) {
-    for i in 0..size {
-        a[i] += b[i];
-    }
+pub fn accum(a: &mut DVector<f32>, b: &DVector<f32>) {
+    a.add_assign(b);
 }

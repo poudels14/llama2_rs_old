@@ -1,6 +1,5 @@
 use crate::llama::{Config, RunState, TransformerWeights};
-use crate::math::{accum, matmul, rmsnorm, softmax};
-// use crate::{Config, RunState, TransformerWeights};
+use crate::math::{self, accum, matmul, rmsnorm, softmax};
 
 pub(crate) fn transformer(
     token: usize,
@@ -10,41 +9,36 @@ pub(crate) fn transformer(
     w: &TransformerWeights,
 ) {
     // a few convenice variables
-    let x = s.x.as_mut_slice();
-    let dim = p.dim as usize;
-    let hidden_dim = p.hidden_dim as usize;
-    let head_size = (p.dim / p.n_heads) as usize;
+    let dim = p.dim;
+    let hidden_dim = p.hidden_dim;
+    let head_size = p.dim / p.n_heads;
 
     // copy the token embedding into x
-    let content_row: &[f32] = &w.token_embedding_table[token * dim..];
-    x[0..dim].clone_from_slice(&content_row[0..dim]);
+    s.x.copy_from(&w.token_embedding_table[token]);
 
     // pluck out the "pos" row of freq_cis_real and freq_cis_imag
     let freq_cis_real_row: &[f32] = &w.freq_cis_real[pos * head_size / 2..];
     let freq_cis_imag_row: &[f32] = &w.freq_cis_imag[pos * head_size / 2..];
 
     // forward all the layers
-    for l in 0..p.n_layers as usize {
+    for l in 0..p.n_layers {
+        let l_dim = l * dim;
         // attention rmsnorm
-        rmsnorm(
-            &mut s.xb,
-            x.as_ptr(),
-            &w.rms_att_weight[(l * dim) as usize..],
-            dim,
-        );
+        rmsnorm(&mut s.xb, &s.x, &w.rms_att_weight[l], dim);
 
         // qkv matmuls for this position
-        let l_dim_dim = (l * dim * dim) as usize;
-        matmul(&mut s.q, &s.xb, &w.wq[l_dim_dim..], dim, dim);
-        matmul(&mut s.k, &s.xb, &w.wk[l_dim_dim..], dim, dim);
-        matmul(&mut s.v, &s.xb, &w.wv[l_dim_dim..], dim, dim);
+        matmul(&mut s.q, &s.xb, &w.wq[l], dim);
+        matmul(&mut s.k, &s.xb, &w.wk[l], dim);
+        matmul(&mut s.v, &s.xb, &w.wv[l], dim);
 
         // apply RoPE rotation to the q and k vectors for each head
+
         let mut h = 0;
         while h < p.n_heads {
             // get the q and k vectors for this head
-            let q = &mut s.q[(h * head_size as i32) as usize..];
-            let k = &mut s.k[(h * head_size as i32) as usize..];
+            let q = &mut s.q.as_mut_slice()[(h * head_size)..];
+            let k = &mut s.k.as_mut_slice()[(h * head_size)..];
+
             // rotate q and k by the freq_cis_real and freq_cis_imag
             let mut i = 0;
             while i < head_size {
@@ -65,22 +59,23 @@ pub(crate) fn transformer(
         }
 
         // save key,value at this time step (pos) to our kv cache
-        let loff: usize = l * p.seq_len as usize * dim; // kv cache layer offset for convenience
+        let loff = l_dim * p.seq_len; // kv cache layer offset for convenience
         let lopp_pos_dim = loff + pos * dim;
         let key_cache_row = &mut s.key_cache[lopp_pos_dim..];
         let value_cache_row = &mut s.value_cache[lopp_pos_dim..];
-        key_cache_row[0..dim].clone_from_slice(&s.k);
-        value_cache_row[0..dim].clone_from_slice(&s.v);
+        key_cache_row[0..dim].clone_from_slice(&s.k.as_slice());
+        value_cache_row[0..dim].clone_from_slice(&s.v.as_slice());
 
         // multihead attention. iterate over all heads
         let mut h = 0;
-        while h < p.n_heads as usize {
+        while h < p.n_heads {
             // get the query vector for this head
-            let q = &s.q[h * head_size..];
+            let q = &s.q.as_slice()[h * head_size..];
             // iterate over all timesteps, including the current one
             for t in 0..pos + 1 {
                 // get the key vector for this head and at this timestep
                 let k = &s.key_cache[loff + t * dim + h * head_size..];
+
                 // calculate the attention score as the dot product of q and k
                 let mut score = 0.0;
                 for i in 0..head_size {
@@ -92,7 +87,7 @@ pub(crate) fn transformer(
             }
 
             // softmax the scores to get attention weights, from 0..pos inclusively
-            softmax(&mut s.att, pos + 1);
+            softmax(&mut s.att.as_mut_slice(), pos + 1);
 
             // weighted sum of the values, store back into xb
             for i in 0..head_size {
@@ -107,30 +102,18 @@ pub(crate) fn transformer(
         }
 
         // final matmul to get the output of the attention
-        matmul(&mut s.xb2, &s.xb, &w.wo[l * dim * dim..], dim, dim);
+        matmul(&mut s.xb2, &s.xb, &w.wo[l], dim);
 
         // residual connection back into x
-        accum(x, &s.xb2, dim);
+        accum(&mut s.x, &s.xb2);
 
         // ffn rmsnorm
-        rmsnorm(&mut s.xb, x.as_ptr(), &w.rms_ffn_weight[l * dim..], dim);
+        rmsnorm(&mut s.xb, &s.x, &w.rms_ffn_weight[l], dim);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        matmul(
-            &mut s.hb,
-            &s.xb,
-            &w.w1[l * dim * hidden_dim..],
-            dim,
-            hidden_dim,
-        );
-        matmul(
-            &mut s.hb2,
-            &s.xb,
-            &w.w3[l * dim * hidden_dim..],
-            dim,
-            hidden_dim,
-        );
+        matmul(&mut s.hb, &s.xb, &w.w1[l], hidden_dim);
+        matmul(&mut s.hb2, &s.xb, &w.w3[l], hidden_dim);
 
         // F.silu; silu(x)=x*σ(x),where σ(x) is the logistic sigmoid
         for i in 0..hidden_dim {
@@ -143,27 +126,15 @@ pub(crate) fn transformer(
         }
 
         // final matmul to get the output of the ffn
-        matmul(
-            &mut s.xb,
-            &s.hb,
-            &w.w2[l * dim * hidden_dim..],
-            hidden_dim,
-            dim,
-        );
+        matmul(&mut s.xb, &s.hb, &w.w2[l], dim);
 
         // residual connection
-        accum(x, &s.xb, dim);
+        accum(&mut s.x, &s.xb);
     }
 
     // final rmsnorm
-    rmsnorm(x, x.as_ptr(), &w.rms_final_weight, dim);
+    math::rmsnorm_self(&mut s.x, &w.rms_final_weight, dim);
 
     // classifier into logits
-    matmul(
-        &mut s.logits,
-        x,
-        &w.token_embedding_table,
-        dim,
-        p.vocab_size as usize,
-    );
+    matmul(&mut s.logits, &s.x, &w.token_embedding_table, p.vocab_size);
 }
