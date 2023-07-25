@@ -1,7 +1,9 @@
 [package]
 name = "llama2_rs"
-version = "0.1.0"
+description = "A rust port of llama2.c"
+version = "0.1.1"
 edition = "2021"
+license = "MIT"
 
 [[bin]]
 name = "llama2"
