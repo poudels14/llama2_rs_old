@@ -7,18 +7,14 @@ edition = "2021"
 name = "llama2"
 path = "src/main.rs"
 
+
 [profile.release]
 opt-level = 3
 codegen-units = 1
-debug = 0
+debug = false
 strip = true
 lto = true
 
-[profile.release.package.rand]
-opt-level = 3
-
-[profile.release.package.rayon]
-opt-level = 3
 
 [dependencies]
 anyhow = "1.0.72"
@@ -27,4 +23,5 @@ serde = { version = "1.0.175", features = ["derive"] }
 rand = "0.8.5"
 rayon = "1.7.0"
 clap = { version = "4.3.19", features = ["derive"] }
-nalgebra = { version = "0.32.3", features = ["rayon"] }
+wide = "0.7.11"
+crunchy = "0.2.2"

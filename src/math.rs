@@ -1,12 +1,12 @@
-use nalgebra::DVector;
-use rayon::prelude::*;
-use std::ops::AddAssign;
+use crunchy::unroll;
+use std::ops::{AddAssign, MulAssign};
+use wide::f32x8;
 
-pub fn argmax(v: &[f32]) -> usize {
+pub fn argmax(v: &[f32], n: usize) -> usize {
     // return argmax of v in elements 0..n
     let mut max_i = 0;
     let mut max_p = v[0];
-    for i in 1..v.len() {
+    for i in 1..n {
         if v[i] > max_p {
             max_i = i;
             max_p = v[i];
@@ -28,27 +28,21 @@ pub fn sample(probabilities: &[f32], n: usize) -> usize {
     return n - 1; // in case of rounding errors
 }
 
-pub fn rmsnorm(o: &mut DVector<f32>, x: &DVector<f32>, weight: &DVector<f32>, size: usize) {
+pub fn rmsnorm(o: &mut [f32], x_ptr: *const f32, weight: &[f32], size: usize) {
+    let x: &[f32] = unsafe { core::slice::from_raw_parts(x_ptr, o.len()) };
     // calculate sum of squares
-    let mut ss = x.dot(&x);
+    let mut ss = 0.;
+    for j in 0..size {
+        ss += x[j] * x[j];
+    }
 
     ss = ss / size as f32;
     ss = ss + 1e-5;
     ss = 1.0 / ss.sqrt();
-
-    o.copy_from(&weight.component_mul(&x.scale(ss)));
-}
-
-pub fn rmsnorm_self(o: &mut DVector<f32>, weight: &DVector<f32>, size: usize) {
-    // calculate sum of squares
-
-    let mut ss = o.dot(&o);
-
-    ss = ss / size as f32;
-    ss = ss + 1e-5;
-    ss = 1.0 / ss.sqrt();
-
-    o.copy_from(&weight.component_mul(&o.scale(ss)));
+    // normalize and scale
+    for j in 0..size {
+        o[j] = weight[j] * (ss * x[j]);
+    }
 }
 
 pub fn softmax(x: &mut [f32], size: usize) {
@@ -78,14 +72,34 @@ pub fn softmax(x: &mut [f32], size: usize) {
     }
 }
 
-pub fn matmul(xout: &mut DVector<f32>, x: &DVector<f32>, w: &Vec<DVector<f32>>, d: usize) {
-    let xout = xout.as_mut_ptr() as usize;
-    w.into_par_iter().enumerate().for_each(|(i, w)| {
-        let xout = unsafe { core::slice::from_raw_parts_mut(xout as *mut f32, d) };
-        xout[i] = x.dot(w);
+pub fn matmul(xout: &mut [f32], x: &[f32], w: &[f32], n: usize, d: usize) {
+    // W (d,n) @ x (n,) -> xout (d,)
+    // Note(sagar): since the loop is unrolled, assert for n here
+    assert!(n % 32 == 0);
+    xout[0..d].iter_mut().enumerate().for_each(|(i, xo)| {
+        let len = std::cmp::min(x.len(), n);
+        let w = &w[i * n..];
+        let xs = &x[..len];
+        let ys = &w[..len];
+
+        let mut sum = f32x8::new([0., 0., 0., 0., 0., 0., 0., 0.]);
+        unroll! {
+            for l in 0..2 {
+                for k in 0..len / (8 * 2) {
+                    let start = (len / 2 * l) + (k * 8);
+                    let mut xs1 = f32x8::from(&xs[start..start + 8]);
+                    let ys1 = f32x8::from(&ys[start..start + 8]);
+                    xs1.mul_assign(ys1);
+                    sum.add_assign(xs1);
+                }
+            }
+        }
+        *xo = sum.reduce_add();
     });
 }
 
-pub fn accum(a: &mut DVector<f32>, b: &DVector<f32>) {
-    a.add_assign(b);
+pub fn accum(a: &mut [f32], b: &[f32], size: usize) {
+    for i in 0..size {
+        a[i] += b[i];
+    }
 }
