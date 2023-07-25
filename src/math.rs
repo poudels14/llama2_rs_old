@@ -76,17 +76,48 @@ pub fn matmul(xout: &mut [f32], x: &[f32], w: &[f32], n: usize, d: usize) {
     // W (d,n) @ x (n,) -> xout (d,)
     // Note(sagar): since the loop is unrolled, assert for n here
     assert!(n % 32 == 0);
+
+    // Note(sagar): best to set this to be same as rayon threadpool threads
+    let threads = 2;
+    let xout = xout.as_ptr() as usize;
+    let x = x.as_ptr() as usize;
+    let w = w.as_ptr() as usize;
+
+    rayon::join(
+        || unsafe {
+            let st = 0 * d / threads;
+
+            let xout = (xout) as *mut f32;
+            let xout = xout.offset(st as isize);
+            let xout: &mut [f32] = core::slice::from_raw_parts_mut(xout, d / threads);
+            let x: &mut [f32] = core::slice::from_raw_parts_mut(x as *mut f32, n);
+            let w: &mut [f32] = core::slice::from_raw_parts_mut(w as *mut f32, n * d);
+            matmul_partial(xout, x, &w[st * n..], n, d / threads);
+        },
+        || unsafe {
+            let st = 1 * d / threads;
+
+            let xout = (xout) as *mut f32;
+            let xout = xout.offset(st as isize);
+            let xout: &mut [f32] = core::slice::from_raw_parts_mut(xout, d / threads);
+            let x: &mut [f32] = core::slice::from_raw_parts_mut(x as *mut f32, n);
+            let w: &mut [f32] = core::slice::from_raw_parts_mut(w as *mut f32, n * d);
+            matmul_partial(xout, x, &w[st * n..], n, d / threads);
+        },
+    );
+}
+
+fn matmul_partial(xout: &mut [f32], x: &[f32], w: &[f32], n: usize, d: usize) {
     xout[0..d].iter_mut().enumerate().for_each(|(i, xo)| {
-        let len = std::cmp::min(x.len(), n);
         let w = &w[i * n..];
-        let xs = &x[..len];
-        let ys = &w[..len];
+        let xs = &x[..n];
+        let ys = &w[..n];
 
         let mut sum = f32x8::new([0., 0., 0., 0., 0., 0., 0., 0.]);
         unroll! {
             for l in 0..2 {
-                for k in 0..len / (8 * 2) {
-                    let start = (len / 2 * l) + (k * 8);
+                for k in 0..n / (8 * 2) {
+                    let start = (n / 2 * l) + (k * 8);
                     let mut xs1 = f32x8::from(&xs[start..start + 8]);
                     let ys1 = f32x8::from(&ys[start..start + 8]);
                     xs1.mul_assign(ys1);

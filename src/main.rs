@@ -7,6 +7,7 @@ use anyhow::Result;
 use clap::Parser;
 use llama::Config;
 use llama::RunOptions;
+use rayon::ThreadPoolBuilder;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::Read;
@@ -38,14 +39,21 @@ fn main() -> Result<()> {
     let weights = llama::init_checkpoint_weights(reader, &config)?;
     let mut state = llama::init_run_state(&config);
 
-    llama::run(
-        &config,
-        &mut state,
-        &weights,
-        RunOptions {
-            temperature: args.temperature,
-        },
-    );
+    let pool = ThreadPoolBuilder::new()
+        // 2 threads seems to perform best
+        .num_threads(2)
+        .build()
+        .unwrap();
+    pool.install(|| {
+        llama::run(
+            &config,
+            &mut state,
+            &weights,
+            RunOptions {
+                temperature: args.temperature,
+            },
+        );
+    });
 
     Ok(())
 }
