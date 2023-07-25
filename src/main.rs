@@ -8,10 +8,9 @@ use clap::Parser;
 use llama::Config;
 use llama::RunOptions;
 use rayon::ThreadPoolBuilder;
+use reader::FloatReader;
 use std::fs::File;
 use std::io::BufReader;
-use std::io::Read;
-use std::mem::size_of;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -30,13 +29,9 @@ fn main() -> Result<()> {
     let file = File::open(args.model)?;
     let mut reader = BufReader::new(file);
 
-    // Note(poudels14): can do size_of Config here since all fields are i32
-    // and alignment is 4 for each field, so there's no round off
-    let mut config = [0; size_of::<Config>()];
-    reader.read_exact(&mut config)?;
-    let config: Config = bincode::deserialize(&config)?;
-
-    let weights = llama::init_checkpoint_weights(reader, &config)?;
+    let mut r = FloatReader::new(&mut reader);
+    let config: Config = llama::read_config(&mut r)?;
+    let weights = llama::init_checkpoint_weights(&mut r, &config)?;
     let mut state = llama::init_run_state(&config);
 
     let pool = ThreadPoolBuilder::new()

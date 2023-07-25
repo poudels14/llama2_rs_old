@@ -10,9 +10,9 @@ pub(crate) fn transformer(
 ) {
     // a few convenice variables
     let x = s.x.as_mut_slice();
-    let dim = p.dim as usize;
-    let hidden_dim = p.hidden_dim as usize;
-    let head_size = (p.dim / p.n_heads) as usize;
+    let dim = p.dim;
+    let hidden_dim = p.hidden_dim;
+    let head_size = p.dim / p.n_heads;
 
     // copy the token embedding into x
     let content_row: &[f32] = &w.token_embedding_table[token * dim..];
@@ -23,17 +23,12 @@ pub(crate) fn transformer(
     let freq_cis_imag_row: &[f32] = &w.freq_cis_imag[pos * head_size / 2..];
 
     // forward all the layers
-    for l in 0..p.n_layers as usize {
+    for l in 0..p.n_layers {
         // attention rmsnorm
-        rmsnorm(
-            &mut s.xb,
-            x.as_ptr(),
-            &w.rms_att_weight[(l * dim) as usize..],
-            dim,
-        );
+        rmsnorm(&mut s.xb, x.as_ptr(), &w.rms_att_weight[(l * dim)..], dim);
 
         // qkv matmuls for this position
-        let l_dim_dim = (l * dim * dim) as usize;
+        let l_dim_dim = l * dim * dim;
         matmul(&mut s.q, &s.xb, &w.wq[l_dim_dim..], dim, dim);
         matmul(&mut s.k, &s.xb, &w.wk[l_dim_dim..], dim, dim);
         matmul(&mut s.v, &s.xb, &w.wv[l_dim_dim..], dim, dim);
@@ -42,8 +37,8 @@ pub(crate) fn transformer(
         let mut h = 0;
         while h < p.n_heads {
             // get the q and k vectors for this head
-            let q = &mut s.q[(h * head_size as i32) as usize..];
-            let k = &mut s.k[(h * head_size as i32) as usize..];
+            let q = &mut s.q[h * head_size..];
+            let k = &mut s.k[h * head_size..];
             // rotate q and k by the freq_cis_real and freq_cis_imag
             let mut i = 0;
             while i < head_size {
@@ -64,7 +59,7 @@ pub(crate) fn transformer(
         }
 
         // save key,value at this time step (pos) to our kv cache
-        let loff: usize = l * p.seq_len as usize * dim; // kv cache layer offset for convenience
+        let loff = l * p.seq_len * dim; // kv cache layer offset for convenience
         let lopp_pos_dim = loff + pos * dim;
         let key_cache_row = &mut s.key_cache[lopp_pos_dim..];
         let value_cache_row = &mut s.value_cache[lopp_pos_dim..];
@@ -73,7 +68,7 @@ pub(crate) fn transformer(
 
         // multihead attention. iterate over all heads
         let mut h = 0;
-        while h < p.n_heads as usize {
+        while h < p.n_heads {
             // get the query vector for this head
             let q = &s.q[h * head_size..];
             // iterate over all timesteps, including the current one
@@ -163,6 +158,6 @@ pub(crate) fn transformer(
         x,
         &w.token_embedding_table,
         dim,
-        p.vocab_size as usize,
+        p.vocab_size,
     );
 }

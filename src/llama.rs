@@ -3,19 +3,17 @@ use crate::reader::FloatReader;
 use crate::transformer;
 use anyhow::Result;
 use serde::Deserialize;
-use std::fs::File;
-use std::io::BufReader;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    pub dim: i32,        // transformer dimension
-    pub hidden_dim: i32, // for ffn layers
-    pub n_layers: i32,   // number of layers
-    pub n_heads: i32,    // number of query heads
+    pub dim: usize,        // transformer dimension
+    pub hidden_dim: usize, // for ffn layers
+    pub n_layers: usize,   // number of layers
+    pub n_heads: usize,    // number of query heads
     #[allow(dead_code)]
-    pub n_kv_heads: i32, // number of key/value heads (can be < query heads because of multiquery)
-    pub vocab_size: i32, // vocabulary size, usually 256 (byte-level)
-    pub seq_len: i32,    // max sequence length
+    pub n_kv_heads: usize, // number of key/value heads (can be < query heads because of multiquery)
+    pub vocab_size: usize, // vocabulary size, usually 256 (byte-level)
+    pub seq_len: usize,    // max sequence length
 }
 
 pub struct TransformerWeights {
@@ -75,21 +73,21 @@ pub fn run(
     let mut pos = 0;
     while pos < config.seq_len {
         // forward the transformer to get logits for the next token
-        transformer::transformer(token, pos as usize, config, state, weights);
+        transformer::transformer(token, pos, config, state, weights);
 
         // sample the next token
         if options.temperature == 0.0 {
             // greedy argmax sampling
-            next = math::argmax(&state.logits, config.vocab_size as usize);
+            next = math::argmax(&state.logits, config.vocab_size);
         } else {
             // apply the temperature to the logits
-            for q in 0..config.vocab_size as usize {
+            for q in 0..config.vocab_size {
                 state.logits[q] /= options.temperature;
             }
             // apply softmax to the logits to get the probabilities for next token
-            math::softmax(&mut state.logits, config.vocab_size as usize);
+            math::softmax(&mut state.logits, config.vocab_size);
             // we now want to sample from this distribution to get the next token
-            next = math::sample(&state.logits, config.vocab_size as usize);
+            next = math::sample(&state.logits, config.vocab_size);
         }
         println!("{:?}", next);
 
@@ -99,11 +97,19 @@ pub fn run(
     }
 }
 
-pub fn init_checkpoint_weights(
-    mut reader: BufReader<File>,
-    config: &Config,
-) -> Result<TransformerWeights> {
-    let mut r = FloatReader::new(&mut reader);
+pub fn read_config(r: &mut FloatReader) -> Result<Config> {
+    Ok(Config {
+        dim: r.read_int()? as usize,
+        hidden_dim: r.read_int()? as usize,
+        n_layers: r.read_int()? as usize,
+        n_heads: r.read_int()? as usize,
+        n_kv_heads: r.read_int()? as usize,
+        vocab_size: r.read_int()? as usize,
+        seq_len: r.read_int()? as usize,
+    })
+}
+
+pub fn init_checkpoint_weights(r: &mut FloatReader, config: &Config) -> Result<TransformerWeights> {
     let head_size = config.dim / config.n_heads;
     let weights = TransformerWeights {
         token_embedding_table: r.read_vec(config.vocab_size * config.dim)?,
@@ -125,9 +131,9 @@ pub fn init_checkpoint_weights(
 }
 
 pub fn init_run_state(config: &Config) -> RunState {
-    let dim = config.dim as usize;
-    let hidden_dim = config.hidden_dim as usize;
-    let cache = (config.n_layers * config.seq_len * config.dim) as usize;
+    let dim = config.dim;
+    let hidden_dim = config.hidden_dim;
+    let cache = config.n_layers * config.seq_len * config.dim;
     RunState {
         x: vec![0.; dim],
         xb: vec![0.; dim],
@@ -137,8 +143,8 @@ pub fn init_run_state(config: &Config) -> RunState {
         q: vec![0.; dim],
         k: vec![0.; dim],
         v: vec![0.; dim],
-        att: vec![0.; config.seq_len as usize],
-        logits: vec![0.; config.vocab_size as usize],
+        att: vec![0.; config.seq_len],
+        logits: vec![0.; config.vocab_size],
         key_cache: vec![0.; cache],
         value_cache: vec![0.; cache],
     }
